@@ -1,0 +1,61 @@
+server:
+  port: 8083
+  shutdown: graceful
+
+spring:
+  application:
+    name: inventory-service
+  
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:inventory_db}
+    username: ${DB_USER:inventory_user}
+    password: ${DB_PASS:inventory_pass}
+    hikari:
+      maximum-pool-size: 20
+      
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: ${KAFKA_BROKERS:localhost:29092}
+          auto-create-topics: false
+      bindings:
+        # Consumer
+        paymentCompleted-in-0:
+          destination: payment.completed
+          group: inventory-service-group
+          consumer:
+            concurrency: 3
+        orderCancelled-in-0:
+          destination: order.cancelled
+          group: inventory-service-group
+          
+        # Producer
+        inventoryEvents-out-0:
+          destination: dummy-topic
+
+outbox:
+  scheduler:
+    enabled: true
+    fixed-delay-ms: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.company.saga: INFO

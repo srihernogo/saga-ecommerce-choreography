@@ -1,0 +1,18 @@
+spring:
+  config:
+    activate:
+      on-profile: docker
+  
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: kafka:9092
+
+management:
+  zipkin:
+    tracing:
+      endpoint: http://zipkin:9411/api/v2/spans
+  tracing:
+    sampling:
+      probability: 1.0

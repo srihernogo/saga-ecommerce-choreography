@@ -1,0 +1,25 @@
+spring:
+  config:
+    activate:
+      on-profile: test
+      
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      
+  flyway:
+    enabled: true
+    clean-on-validation-error: true
+
+  cloud:
+    stream:
+      default-binder: kafka
+
+outbox:
+  scheduler:
+    enabled: false
+
+logging:
+  level:
+    com.company.saga: DEBUG
+    org.springframework.cloud.stream: WARN

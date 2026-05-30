@@ -1,0 +1,90 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: order-service
+  
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:order_db}
+    username: ${DB_USER:order_user}
+    password: ${DB_PASS:order_pass}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate.format_sql: true
+      
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: ${KAFKA_BROKERS:localhost:29092}
+          auto-create-topics: false
+      bindings:
+        # Consumer
+        paymentCompleted-in-0:
+          destination: payment.completed
+          group: order-service-group
+          consumer:
+            concurrency: 3
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-max-interval: 10000
+            back-off-multiplier: 2.0
+        paymentFailed-in-0:
+          destination: payment.failed
+          group: order-service-group
+        inventoryReserved-in-0:
+          destination: inventory.reserved
+          group: order-service-group
+        inventoryFailed-in-0:
+          destination: inventory.failed
+          group: order-service-group
+        shippingCreated-in-0:
+          destination: shipping.created
+          group: order-service-group
+        shippingFailed-in-0:
+          destination: shipping.failed
+          group: order-service-group
+          
+        # Producer
+        orderEvents-out-0:
+          destination: dummy-topic # Topic diset dinamis via Header
+
+outbox:
+  scheduler:
+    enabled: true
+    fixed-delay-ms: 1000
+    batch-size: 100
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.company.saga: INFO
+    org.springframework.cloud.stream: WARN
+    org.apache.kafka: WARN

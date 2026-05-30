@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.*
+**/target/*
+!**/target/*.jar
+**/.idea
+**/.vscode
+**/*.iml
+**/.DS_Store
+monitoring/grafana/data
+README.md
+docker-compose-example.yml

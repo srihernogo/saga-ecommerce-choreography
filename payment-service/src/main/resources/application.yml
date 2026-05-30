@@ -1,0 +1,61 @@
+server:
+  port: 8082
+  shutdown: graceful
+
+spring:
+  application:
+    name: payment-service
+  
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:payment_db}
+    username: ${DB_USER:payment_user}
+    password: ${DB_PASS:payment_pass}
+    hikari:
+      maximum-pool-size: 20
+      
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    
+  cloud:
+    stream:
+      kafka:
+        binder:
+          brokers: ${KAFKA_BROKERS:localhost:29092}
+          auto-create-topics: false
+      bindings:
+        # Consumer
+        orderCreated-in-0:
+          destination: order.created
+          group: payment-service-group
+          consumer:
+            concurrency: 3
+        orderCancelled-in-0:
+          destination: order.cancelled
+          group: payment-service-group
+          
+        # Producer
+        paymentEvents-out-0:
+          destination: dummy-topic
+
+outbox:
+  scheduler:
+    enabled: true
+    fixed-delay-ms: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.company.saga: INFO

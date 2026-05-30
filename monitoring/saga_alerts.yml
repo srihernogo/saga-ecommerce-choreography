@@ -1,0 +1,58 @@
+groups:
+  - name: saga-alerts
+    rules:
+      # Saga stuck lebih dari 15 menit
+      - alert: SagaStuck
+        expr: saga_stuck_count > 0
+        for: 1m
+        labels:
+          severity: high
+          team: platform
+        annotations:
+          summary: "{{ $value }} Saga stuck lebih dari 15 menit"
+          description: "Kemungkinan ada service yang down atau DLQ penuh"
+          runbook: "https://wiki.company.id/runbook/stuck-saga"
+
+      # Failure rate > 5% dalam 5 menit terakhir
+      - alert: SagaHighFailureRate
+        expr: |
+          rate(saga_failed_total[5m]) /
+          (rate(saga_started_total[5m]) + 0.001) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Saga failure rate > 5%: {{ $value | humanizePercentage }}"
+          description: "Cek service yang paling sering gagal di dashboard"
+
+      # Ada pesan di DLQ
+      - alert: DlqMessageReceived
+        expr: increase(kafka_consumer_group_lag{topic=~".*\\.dlq"}[5m]) > 0
+        for: 30s
+        labels:
+          severity: high
+        annotations:
+          summary: "Ada pesan di DLQ: {{ $labels.topic }}"
+          description: "Akses /internal/dlq untuk review dan retry"
+
+      # Outbox memiliki DEAD messages
+      - alert: OutboxDeadMessages
+        expr: outbox_dead_messages_total > 0
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: "Ada {{ $value }} DEAD outbox messages"
+          description: "Pesan tidak bisa dipublish setelah max retry"
+
+      # Rata-rata durasi Saga terlalu lama (> 30 detik)
+      - alert: SagaSlowProcessing
+        expr: |
+          histogram_quantile(0.95,
+            rate(saga_duration_seconds_bucket{result="success"}[10m])
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 Saga duration > 30 detik: {{ $value }}s"

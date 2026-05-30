@@ -1,0 +1,292 @@
+# ── Networks ──────────────────────────────────────────────────────────────
+networks:
+  saga-net:
+    driver: bridge
+
+# ── Volumes ───────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  grafana_data:
+  prometheus_data:
+
+services:
+
+  # ════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE
+  # ════════════════════════════════════════════════════════════
+
+  postgres:
+    image: postgres:16
+    container_name: saga-postgres
+    networks: [saga-net]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres  # Default DB — setiap service punya DB sendiri
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-databases.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Kafka dengan KRaft mode (tanpa ZooKeeper — lebih simple)
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: saga-kafka
+    networks: [saga-net]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'   # Buat manual via kafka-init
+      KAFKA_LOG_RETENTION_HOURS: 168             # 7 hari retensi
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824        # 1 GB per segment
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    ports:
+      - "9092:9092"
+      - "29092:29092"  # Akses dari host machine untuk development
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # Buat semua Kafka topics saat startup
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: saga-kafka-init
+    networks: [saga-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./scripts/create-topics.sh:/create-topics.sh
+    command: ["bash", "/create-topics.sh"]
+    restart: on-failure
+
+  # Kafka UI — untuk monitoring topics dan messages
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: saga-kafka-ui
+    networks: [saga-net]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: saga-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9997
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ════════════════════════════════════════════════════════════
+  # MICROSERVICES
+  # ════════════════════════════════════════════════════════════
+
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    container_name: saga-order-service
+    networks: [saga-net]
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_NAME: order_db
+      DB_USER: order_user
+      DB_PASS: order_pass
+      KAFKA_BROKERS: kafka:9092
+      ZIPKIN_HOST: zipkin
+      SERVER_PORT: 8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1",
+             "--spider", "http://localhost:8081/actuator/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s    # Spring Boot butuh waktu untuk startup
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    container_name: saga-payment-service
+    networks: [saga-net]
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_NAME: payment_db
+      DB_USER: payment_user
+      DB_PASS: payment_pass
+      KAFKA_BROKERS: kafka:9092
+      ZIPKIN_HOST: zipkin
+      SERVER_PORT: 8082
+      # Payment Gateway config (gunakan sandbox untuk testing)
+      MIDTRANS_BASE_URL: https://api.sandbox.midtrans.com
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-SB-Mid-server-test}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1",
+             "--spider", "http://localhost:8082/actuator/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: inventory-service/Dockerfile
+    container_name: saga-inventory-service
+    networks: [saga-net]
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_NAME: inventory_db
+      DB_USER: inventory_user
+      DB_PASS: inventory_pass
+      KAFKA_BROKERS: kafka:9092
+      ZIPKIN_HOST: zipkin
+      SERVER_PORT: 8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1",
+             "--spider", "http://localhost:8083/actuator/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  shipping-service:
+    build:
+      context: .
+      dockerfile: shipping-service/Dockerfile
+    container_name: saga-shipping-service
+    networks: [saga-net]
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_NAME: shipping_db
+      DB_USER: shipping_user
+      DB_PASS: shipping_pass
+      KAFKA_BROKERS: kafka:9092
+      ZIPKIN_HOST: zipkin
+      SERVER_PORT: 8084
+      JNE_API_KEY: ${JNE_API_KEY:-test-key}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1",
+             "--spider", "http://localhost:8084/actuator/health/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════════
+  # OBSERVABILITY
+  # ════════════════════════════════════════════════════════════
+
+  zipkin:
+    image: openzipkin/zipkin:3
+    container_name: saga-zipkin
+    networks: [saga-net]
+    ports:
+      - "9411:9411"
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: saga-prometheus
+    networks: [saga-net]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/saga_alerts.yml:/etc/prometheus/saga_alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: saga-grafana
+    networks: [saga-net]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
